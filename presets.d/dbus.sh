@@ -114,7 +114,7 @@ finalize_dbus() {
         EXTRA_BWRAP_OPTS+=(--bind "$proxy_dir" "$proxy_dir")
         ENV_PRESET_OPTS+=(--setenv DBUS_SESSION_BUS_ADDRESS "unix:path=$proxy_socket")
     else
-        yell "D-Bus proxy failed to start"
+        die "D-Bus proxy failed to start"
     fi
 }
 
