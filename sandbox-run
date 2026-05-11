@@ -296,9 +296,9 @@ bwrap \
      --symlink /run /var/run \
      --symlink /tmp /var/tmp \
      --dir "/run/user/$UID_NUM" \
+     --bind "$PROJECT_DIR" "$PROJECT_DIR" \
      "${BIND_OPTS[@]}" \
      ${SANDBOX_RUN_BWRAP_ARGS:-} \
-     --bind "$PROJECT_DIR" "$PROJECT_DIR" \
      "${EXTRA_BWRAP_OPTS[@]}" \
      --proc /proc \
      --dev /dev \
