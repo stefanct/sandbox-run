@@ -272,7 +272,16 @@ done
 # Shared items overlaid on top of sandbox
 for p in "${SHARED_BINDS[@]}"; do BIND_OPTS+=(--bind-try "$p" "$p"); done
 for p in "${BLOCKED[@]}"; do
-    [[ -e "$p" ]] && BIND_OPTS+=(--ro-bind /dev/null "$p")
+    if [[ -e "$p" ]]; then
+        if [ -d "$p" ]; then
+            tmp_dir="$(mktemp -d || true)"
+            [ -d "$tmp_dir" ] || die "Could not create temp dir to shadow $p"
+            CLEANUP_FILES+=("$tmp_dir")
+            BIND_OPTS+=(--ro-bind "$tmp_dir" "$p")
+        else
+            BIND_OPTS+=(--ro-bind /dev/null "$p")
+        fi
+    fi
 done
 
 # Environment variables to pass into sandbox
