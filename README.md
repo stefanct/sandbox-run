@@ -64,7 +64,8 @@ For example:
 SANDBOX_RUN_PRESETS_EXTRA=pi sandbox-run pi
 ```
 
-The current working directory becomes the project root inside the sandbox.
+The current working directory becomes the project root inside the sandbox (with its contents shared).
+However, if `SANDBOX_RUN_BWRAP_CHDIR` is set, the command is launched from within that directory.
 
 ### Symlink Mode
 
