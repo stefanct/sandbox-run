@@ -333,7 +333,7 @@ bwrap \
      --hostname sandbox-run \
      "${SESSION_OPTS[@]}" \
      --die-with-parent \
-     --chdir "${SANDBOX_CHDIR:-$PROJECT_DIR}" \
+     --chdir "${SANDBOX_RUN_BWRAP_CHDIR:-$PROJECT_DIR}" \
      --bind-data 5 /etc/passwd \
      --bind-data 4 /etc/group \
      -- "$bin" "$@" \

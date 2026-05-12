@@ -156,6 +156,7 @@ All configuration uses the `SANDBOX_RUN_` prefix:
 | `SANDBOX_RUN_DEV_BIND=path:path` | Additional device binds |
 | `SANDBOX_RUN_BLOCKED=path:path` | Additional paths to block |
 | `SANDBOX_RUN_BWRAP_ARGS="args"` | Extra bwrap arguments |
+| `SANDBOX_RUN_BWRAP_CHDIR="path"` | Start command in given directory |
 | `SANDBOX_RUN_DBUS_TALK=name:name` | Additional D-Bus names to allow via `xdg-dbus-proxy --talk` |
 | `SANDBOX_RUN_DBUS_CALL=name=rule:name=rule` | Additional D-Bus method rules via `xdg-dbus-proxy --call` |
 | `SANDBOX_RUN_DBUS_BROADCAST=name=rule:name=rule` | Additional D-Bus signal rules via `xdg-dbus-proxy --broadcast` |
