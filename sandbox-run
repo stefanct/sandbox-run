@@ -306,6 +306,11 @@ ENV_OPTS=(
     "${ENV_PRESET_OPTS[@]}"
 )
 
+# Prepare --unsetenv arguments to remove any current SANDBOX_RUN_* variables
+while IFS= read -r name; do
+    ENV_OPTS+=( --unsetenv "$name" )
+done < <(compgen -e | grep '^SANDBOX_RUN_')
+
 # Session isolation (default: enabled for security)
 # Presets can disable this to allow job control (bg, fg, Ctrl+Z)
 SESSION_OPTS=()
