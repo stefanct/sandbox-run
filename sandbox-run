@@ -18,6 +18,7 @@ Usage: sandbox-run [OPTIONS] <command> [args...]
 Run a command inside a bubblewrap sandbox.
 
 Options:
+  -g, --git              Clone the current project git repository into a temporary directory
   -h, --help             Show this help message and exit
 EOF
 }
@@ -59,6 +60,7 @@ trap cleanup EXIT
 
 ORIGINAL_ARGS=("$@")
 SCRIPT_NAME="${0##*/}"
+USE_GIT_CLONE=0
 
 # Prevent nested sandboxing (causes overhead and bind-mount conflicts)
 if [[ -n "${SANDBOX_RUN:-}" ]]; then
@@ -82,6 +84,10 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
             -h|--help)
                 usage
                 exit 0
+                ;;
+            -g|--git)
+                USE_GIT_CLONE=1
+                shift
                 ;;
             --)
                 shift
@@ -112,8 +118,64 @@ else
 fi
 
 PROJECT_DIR="$(pwd)"
+ORIGINAL_PROJECT_DIR="$PROJECT_DIR"
 PROJECT_HASH=$(echo "$PROJECT_DIR" | sha256sum | cut -c1-12)
 UID_NUM=$(id -u)
+
+if [ "$USE_GIT_CLONE" -eq 1 ]; then
+    if ! command -v git > /dev/null 2>&1; then
+        die "--git requested but git is not installed"
+    fi
+    if ! git -C "$ORIGINAL_PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        yell "warning: --git requested but $ORIGINAL_PROJECT_DIR is not inside a git repository; continuing without cloning"
+    else
+        repo_root=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse --show-toplevel)
+        rel_path="${ORIGINAL_PROJECT_DIR#$repo_root}"
+        if [ "$rel_path" = "$ORIGINAL_PROJECT_DIR" ]; then
+            rel_path=""
+        else
+            rel_path="${rel_path#/}"
+        fi
+
+        current_branch=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        clone_dir=$(mktemp -d -t sandbox-run.git.XXXXXX)
+        [ -d "$clone_dir" ] || die "Failed to create temporary directory for git clone"
+        CLEANUP_FILES+=("$clone_dir")
+
+        clone_opts=(--origin human)
+        if [ -n "$current_branch" ] && [ "$current_branch" != "HEAD" ]; then
+            clone_opts+=(--single-branch --branch "$current_branch")
+        fi
+
+        git clone "${clone_opts[@]}" "$repo_root" "$clone_dir"
+
+        (
+            set -euo pipefail
+            cd "$clone_dir"
+            git remote set-url --push human DISABLED
+            if [ -n "$current_branch" ] && [ "$current_branch" != "HEAD" ]; then
+                git checkout "$current_branch" >/dev/null 2>&1
+            else
+                head_commit=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse HEAD)
+                git checkout --detach "$head_commit"
+                git branch --force sandbox-detached "$head_commit" >/dev/null 2>&1
+                git checkout sandbox-detached >/dev/null 2>&1
+            fi
+        )
+
+        if [ -n "$rel_path" ]; then
+            PROJECT_DIR="$clone_dir/$rel_path"
+        else
+            PROJECT_DIR="$clone_dir"
+        fi
+
+        if [ ! -d "$PROJECT_DIR" ]; then
+            die "Cloned repository missing expected path '${rel_path:-.}'"
+        fi
+
+        yell "Using git sandbox clone at $PROJECT_DIR (remote human=$repo_root)"
+    fi
+fi
 
 # Base sandbox directories
 SANDBOX_ROOT="$HOME/.sandbox-run"
