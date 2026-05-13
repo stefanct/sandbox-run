@@ -19,6 +19,8 @@ Run a command inside a bubblewrap sandbox.
 
 Options:
   -g, --git              Clone the current project git repository into a temporary directory
+  -s, --shallow[=DEPTH]  Perform a shallow clone (default depth=1); requires --git
+                         Use -s DEPTH or --shallow=DEPTH to set a custom depth.
   -t, --tmpdir LOC       Parent directory for the temporary clone; requires --git
                          LOC may be 'auto' (under the source repo's .git/) or a path.
                          Overrides SANDBOX_RUN_GIT_TMPDIR.
@@ -64,6 +66,8 @@ trap cleanup EXIT
 ORIGINAL_ARGS=("$@")
 SCRIPT_NAME="${0##*/}"
 USE_GIT_CLONE=0
+GIT_SHALLOW=0
+GIT_SHALLOW_DEPTH=""
 GIT_TMPDIR_CLI=""
 
 # Prevent nested sandboxing (causes overhead and bind-mount conflicts)
@@ -93,6 +97,29 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
                 USE_GIT_CLONE=1
                 shift
                 ;;
+            -s|--shallow|--shallow=*)
+                GIT_SHALLOW=1
+                case "$1" in
+                    --shallow=*)
+                        GIT_SHALLOW_DEPTH="${1#--shallow=}"
+                        [ -z "$GIT_SHALLOW_DEPTH" ] && die "--shallow= requires a depth value"
+                        ;;
+                    *)
+                        GIT_SHALLOW_DEPTH=1
+                        if [ $# -gt 1 ]; then
+                            case "$2" in
+                                ''|-*|*[!0-9]*) ;;
+                                *) GIT_SHALLOW_DEPTH="$2"; shift ;;
+                            esac
+                        fi
+                        ;;
+                esac
+                case "$GIT_SHALLOW_DEPTH" in
+                    *[!0-9]*) die "Invalid depth for --shallow: $GIT_SHALLOW_DEPTH" ;;
+                esac
+                [ "$GIT_SHALLOW_DEPTH" -eq 0 ] && die "--shallow depth must be greater than zero"
+                shift
+                ;;
             -t|--tmpdir|--tmpdir=*)
                 case "$1" in
                     --tmpdir=*)
@@ -119,6 +146,10 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
                 ;;
         esac
     done
+
+    if [ "$GIT_SHALLOW" -eq 1 ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
+        die "--shallow requires --git"
+    fi
 
     if [ -n "$GIT_TMPDIR_CLI" ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
         die "--tmpdir requires --git"
@@ -209,8 +240,21 @@ if [ "$USE_GIT_CLONE" -eq 1 ]; then
         if [ -n "$current_branch" ] && [ "$current_branch" != "HEAD" ]; then
             clone_opts+=(--single-branch --branch "$current_branch")
         fi
+        # git silently ignores --depth for local-path clones (it hardlinks objects
+        # instead) and prints "warning: --depth is ignored in local clones; use
+        # file:// instead." Switch to a file:// URL when shallow is requested so
+        # the depth is actually honored. This also makes subsequent fetches
+        # against the resulting `human` remote shallow-capable.
+        clone_source="$repo_root"
+        if [ "$GIT_SHALLOW" -eq 1 ]; then
+            if [ -z "$GIT_SHALLOW_DEPTH" ]; then
+                GIT_SHALLOW_DEPTH=1
+            fi
+            clone_opts+=(--depth "$GIT_SHALLOW_DEPTH" --no-tags)
+            clone_source="file://$repo_root"
+        fi
 
-        git clone "${clone_opts[@]}" "$repo_root" "$clone_dir"
+        git clone "${clone_opts[@]}" "$clone_source" "$clone_dir"
 
         (
             set -euo pipefail
@@ -219,9 +263,17 @@ if [ "$USE_GIT_CLONE" -eq 1 ]; then
             if [ -n "$current_branch" ] && [ "$current_branch" != "HEAD" ]; then
                 git checkout "$current_branch" >/dev/null 2>&1
             else
+                fetch_opts=()
+                if [ "$GIT_SHALLOW" -eq 1 ]; then
+                    if [ -z "$GIT_SHALLOW_DEPTH" ]; then
+                        GIT_SHALLOW_DEPTH=1
+                    fi
+                    fetch_opts+=("--depth=$GIT_SHALLOW_DEPTH" --no-tags)
+                fi
                 head_commit=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse HEAD)
-                git checkout --detach "$head_commit"
-                git branch --force sandbox-detached "$head_commit" >/dev/null 2>&1
+                git fetch "${fetch_opts[@]}" human "$head_commit"
+                git checkout --detach FETCH_HEAD >/dev/null 2>&1
+                git branch --force sandbox-detached FETCH_HEAD >/dev/null 2>&1
                 git checkout sandbox-detached >/dev/null 2>&1
             fi
         )
