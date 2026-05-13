@@ -11,6 +11,16 @@ set -o pipefail
 
 yell() { echo "$0: $*" >&2; }
 die() { yell "$*"; exit 111; }
+usage() {
+    cat <<'EOF'
+Usage: sandbox-run [OPTIONS] <command> [args...]
+
+Run a command inside a bubblewrap sandbox.
+
+Options:
+  -h, --help             Show this help message and exit
+EOF
+}
 
 # Parse colon-separated env var into array
 parse_paths() {
@@ -47,10 +57,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+ORIGINAL_ARGS=("$@")
+SCRIPT_NAME="${0##*/}"
+
 # Prevent nested sandboxing (causes overhead and bind-mount conflicts)
 if [[ -n "${SANDBOX_RUN:-}" ]]; then
     yell "warning: already sandboxed, executing directly"
-    exec "$@"
+    exec "${ORIGINAL_ARGS[@]}"
 fi
 
 
@@ -63,15 +76,34 @@ fi
 # - Symlink mode (e.g., ~/bin/claude -> sandbox-run): use symlink name
 # - Direct mode (e.g., sandbox-run claude): use first argument
 # The sandbox's PATH will resolve it (includes ~/.local/bin + system paths)
-bin="${0##*/}"
-if [[ "$bin" == 'sandbox-run' ]]; then
-    if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-        echo "Usage: $0 <command> [args...]"
-        echo "Run a command inside a bubblewrap sandbox."
-        exit 0
+if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                break
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    if [ $# -eq 0 ]; then
+        usage >&2
+        exit 1
     fi
     bin="$1"
     shift
+else
+    bin="$SCRIPT_NAME"
 fi
 
 PROJECT_DIR="$(pwd)"
