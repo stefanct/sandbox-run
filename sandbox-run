@@ -97,8 +97,13 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
     done
 
     if [ $# -eq 0 ]; then
-        usage >&2
-        exit 1
+        if [ -n "${SANDBOX_RUN_DEFAULT_CMD:-}" ]; then
+            read -ra _default_cmd <<< "$SANDBOX_RUN_DEFAULT_CMD"
+            set -- "${_default_cmd[@]}"
+        else
+            usage >&2
+            exit 1
+        fi
     fi
     bin="$1"
     shift
