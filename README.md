@@ -212,6 +212,7 @@ Extra presets are opt-in and must be explicitly enabled via `SANDBOX_RUN_PRESETS
 | `opencode` | OpenCode session isolation per project |
 | `vibe` | Mistral Vibe session isolation per project |
 | `git` | User-global Git config (`$XDG_CONFIG_HOME/git`, `~/.gitconfig`) read-only |
+| `git-minimal` | Minimal context for git to allow for proper commit metadata without a complete gitconfig |
 | `glab` | GitLab CLI config |
 | `forgejo` | Forgejo CLI config |
 | `docker` | Docker socket (proxy or direct) |
