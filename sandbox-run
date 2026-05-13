@@ -21,10 +21,13 @@ Options:
   -g, --git              Clone the current project git repository into a temporary directory
   -s, --shallow[=DEPTH]  Perform a shallow clone (default depth=1); requires --git
                          Use -s DEPTH or --shallow=DEPTH to set a custom depth.
+  -b, --branch BRANCH    Include BRANCH in the cloned repository (repeatable); requires --git
   -t, --tmpdir LOC       Parent directory for the temporary clone; requires --git
                          LOC may be 'auto' (under the source repo's .git/) or a path.
                          Overrides SANDBOX_RUN_GIT_TMPDIR.
   -h, --help             Show this help message and exit
+
+When --git is supplied without --branch, the currently checked-out branch is cloned.
 EOF
 }
 
@@ -69,6 +72,7 @@ USE_GIT_CLONE=0
 GIT_SHALLOW=0
 GIT_SHALLOW_DEPTH=""
 GIT_TMPDIR_CLI=""
+declare -a GIT_BRANCHES=()
 
 # Prevent nested sandboxing (causes overhead and bind-mount conflicts)
 if [[ -n "${SANDBOX_RUN:-}" ]]; then
@@ -76,16 +80,11 @@ if [[ -n "${SANDBOX_RUN:-}" ]]; then
     exec "${ORIGINAL_ARGS[@]}"
 fi
 
-
-if ! command -v bwrap > /dev/null 2>&1
-then
-  die "Please install bubblewrap!"
-fi
-
 # Determine command to run:
 # - Symlink mode (e.g., ~/bin/claude -> sandbox-run): use symlink name
 # - Direct mode (e.g., sandbox-run claude): use first argument
 # The sandbox's PATH will resolve it (includes ~/.local/bin + system paths)
+# Parse command-line options only when invoked directly as sandbox-run
 if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -120,6 +119,11 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
                 [ "$GIT_SHALLOW_DEPTH" -eq 0 ] && die "--shallow depth must be greater than zero"
                 shift
                 ;;
+            -b|--branch)
+                [ $# -lt 2 ] && die "Option '$1' requires an argument"
+                GIT_BRANCHES+=("$2")
+                shift 2
+                ;;
             -t|--tmpdir|--tmpdir=*)
                 case "$1" in
                     --tmpdir=*)
@@ -139,27 +143,33 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
                 break
                 ;;
             -*)
-                break
+                die "Unknown option: $1"
                 ;;
             *)
                 break
                 ;;
         esac
     done
+fi
 
-    if [ "$GIT_SHALLOW" -eq 1 ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
-        die "--shallow requires --git"
-    fi
+if [ "$GIT_SHALLOW" -eq 1 ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
+    die "--shallow requires --git"
+fi
 
-    if [ -n "$GIT_TMPDIR_CLI" ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
-        die "--tmpdir requires --git"
-    fi
+if [ "${#GIT_BRANCHES[@]}" -gt 0 ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
+    die "--branch requires --git"
+fi
 
-    # CLI --tmpdir overrides SANDBOX_RUN_GIT_TMPDIR
-    if [ -n "$GIT_TMPDIR_CLI" ]; then
-        SANDBOX_RUN_GIT_TMPDIR="$GIT_TMPDIR_CLI"
-    fi
+if [ -n "$GIT_TMPDIR_CLI" ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
+    die "--tmpdir requires --git"
+fi
 
+# CLI --tmpdir overrides SANDBOX_RUN_GIT_TMPDIR
+if [ -n "$GIT_TMPDIR_CLI" ]; then
+    SANDBOX_RUN_GIT_TMPDIR="$GIT_TMPDIR_CLI"
+fi
+
+if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
     if [ $# -eq 0 ]; then
         if [ -n "${SANDBOX_RUN_DEFAULT_CMD:-}" ]; then
             read -ra _default_cmd <<< "$SANDBOX_RUN_DEFAULT_CMD"
@@ -173,6 +183,11 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
     shift
 else
     bin="$SCRIPT_NAME"
+fi
+
+if ! command -v bwrap > /dev/null 2>&1
+then
+  die "Please install bubblewrap!"
 fi
 
 PROJECT_DIR="$(pwd)"
@@ -195,7 +210,15 @@ if [ "$USE_GIT_CLONE" -eq 1 ]; then
             rel_path="${rel_path#/}"
         fi
 
-        current_branch=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        clone_branches=("${GIT_BRANCHES[@]}")
+        if [ "${#clone_branches[@]}" -eq 0 ]; then
+            current_branch=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+            if [ -n "$current_branch" ] && [ "$current_branch" != "HEAD" ]; then
+                clone_branches=("$current_branch")
+            else
+                yell "warning: --git requested but HEAD is detached; cloning current commit only"
+            fi
+        fi
 
         # Pick a parent directory for the temporary clone.
         # SANDBOX_RUN_GIT_TMPDIR:
@@ -237,8 +260,8 @@ if [ "$USE_GIT_CLONE" -eq 1 ]; then
         CLEANUP_FILES+=("$clone_dir")
 
         clone_opts=(--origin human)
-        if [ -n "$current_branch" ] && [ "$current_branch" != "HEAD" ]; then
-            clone_opts+=(--single-branch --branch "$current_branch")
+        if [ "${#clone_branches[@]}" -gt 0 ]; then
+            clone_opts+=(--single-branch --branch "${clone_branches[0]}")
         fi
         # git silently ignores --depth for local-path clones (it hardlinks objects
         # instead) and prints "warning: --depth is ignored in local clones; use
@@ -259,17 +282,25 @@ if [ "$USE_GIT_CLONE" -eq 1 ]; then
         (
             set -euo pipefail
             cd "$clone_dir"
+
             git remote set-url --push human DISABLED
-            if [ -n "$current_branch" ] && [ "$current_branch" != "HEAD" ]; then
-                git checkout "$current_branch" >/dev/null 2>&1
-            else
-                fetch_opts=()
-                if [ "$GIT_SHALLOW" -eq 1 ]; then
-                    if [ -z "$GIT_SHALLOW_DEPTH" ]; then
-                        GIT_SHALLOW_DEPTH=1
-                    fi
-                    fetch_opts+=("--depth=$GIT_SHALLOW_DEPTH" --no-tags)
+
+            fetch_opts=()
+            if [ "$GIT_SHALLOW" -eq 1 ]; then
+                if [ -z "$GIT_SHALLOW_DEPTH" ]; then
+                    GIT_SHALLOW_DEPTH=1
                 fi
+                fetch_opts+=("--depth=$GIT_SHALLOW_DEPTH" --no-tags)
+            fi
+
+            if [ "${#clone_branches[@]}" -gt 1 ]; then
+                for branch in "${clone_branches[@]:1}"; do
+                    git config --add remote.human.fetch "+refs/heads/$branch:refs/remotes/human/$branch"
+                    git fetch "${fetch_opts[@]}" human "refs/heads/$branch:refs/heads/$branch"
+                done
+            fi
+
+            if [ "${#clone_branches[@]}" -eq 0 ]; then
                 head_commit=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse HEAD)
                 git fetch "${fetch_opts[@]}" human "$head_commit"
                 git checkout --detach FETCH_HEAD >/dev/null 2>&1
