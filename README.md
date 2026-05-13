@@ -87,6 +87,70 @@ ln -s ~/bin/sandbox-run ~/bin/pnpm
 pnpm install -g some-package   # installs to sandbox, not your system
 ```
 
+## Git Integration
+
+`sandbox-run` can clone the current project's git repository into a temporary directory and run the command against that clone instead of your working tree.
+This keeps experiments, builds, or AI agents from touching uncommitted changes and the git database in your real checkout while still giving them access to the project's history.
+
+The clone lives in a temporary directory that is automatically removed when the sandbox exits.
+The original repository is added as a remote named `human`, and its push URL is disabled so the sandboxed command cannot accidentally push back into your source repository.
+
+### Options
+
+These options are only parsed when invoking `sandbox-run` directly (not via a symlink):
+
+| Option | Description |
+|--------|-------------|
+| `-g`, `--git` | Clone the current project's git repository into a temporary directory and run the command there |
+| `-s`, `--shallow[=DEPTH]` | Perform a shallow clone (default depth `1`); requires `--git`. Use `-s DEPTH` or `--shallow=DEPTH` for a custom depth |
+| `-b`, `--branch BRANCH` | Include `BRANCH` in the cloned repository (repeatable); requires `--git` |
+| `-t`, `--tmpdir LOC` | Parent directory for the temporary clone (`auto` or a path); requires `--git`. Overrides `SANDBOX_RUN_GIT_TMPDIR` |
+
+When `--git` is supplied without `--branch`, the currently checked-out branch is cloned.
+If `HEAD` is detached, the commit is fetched from the original repo and checked out under a local `sandbox-detached` branch inside the clone.
+
+If the current directory is a subdirectory of the repository, the sandbox starts inside the matching subdirectory of the clone.
+
+### Examples
+
+```bash
+# Run a build against a throwaway clone of the current repo
+sandbox-run --git make
+
+# Shallow clone for faster setup when full history isn't needed
+sandbox-run --git --shallow=20 ./run-tests.sh
+
+# Include additional branches in the clone
+sandbox-run --git --branch main --branch develop bash
+
+# Hand a clone off to a coding agent without risking your working tree
+SANDBOX_RUN_PRESETS_EXTRA=pi sandbox-run --git pi
+```
+
+### Clone Location
+
+By default the temporary clone is created via `mktemp` (so it lives under `$TMPDIR`, typically `/tmp`, which is often a `tmpfs`).
+For small projects this is the fastest option, but for large repositories it can waste a lot of memory/disk:
+With `mktemp` the clone parent is usually on a different filesystem than the source, so git cannot use its local-clone optimization (hardlinking objects from the source repo) and has to copy the entire object database instead.
+
+Set `SANDBOX_RUN_GIT_TMPDIR` (or pass `--tmpdir LOC` on the command line, which overrides the environment variable) to control where the clone is placed:
+
+| Value | Behavior |
+|-------|----------|
+| _unset_ | Default `mktemp` location (`$TMPDIR` or `/tmp`). |
+| `auto` | Under `$(git rev-parse --git-common-dir)/sandbox-run-clones/`, i.e., inside the source repo's own `.git/` directory.
+This is guaranteed to be on the same filesystem as the source object store, so git's hardlink optimization applies.
+Falls back to `mktemp` with a warning if the directory cannot be created. |
+| _explicit path_ | Use that directory as the parent (relative to CWD or absolute); must already exist.
+Useful for pointing at a dedicated scratch volume (e.g., fast NVMe).
+Hardlink optimization will apply only if that path happens to be on the same filesystem as the source. |
+
+Notes:
+
+- Shallow clones (`--shallow`) always go through git's `file://` transport, which never hardlinks regardless of filesystem.
+  The clone is independent in that case, so `SANDBOX_RUN_GIT_TMPDIR` only affects *where* it is placed.
+- The clone is removed when the sandbox exits, regardless of where it lives.
+
 ## Docker Support
 
 Enable the docker preset with `SANDBOX_RUN_PRESETS_EXTRA=docker` (or add `docker` to your existing extras).
