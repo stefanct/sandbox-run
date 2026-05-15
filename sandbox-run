@@ -344,10 +344,16 @@ while IFS= read -r name; do
 done < <(compgen -e | grep '^SANDBOX_RUN_')
 
 # Session isolation (default: enabled for security)
-# Presets can disable this to allow job control (bg, fg, Ctrl+Z)
+# Skip --new-session when attached to an interactive TTY so shells retain job control.
+# This is insecure before Linux 6.2 (83efeeeb3d04b22aaed1df99bc70a48fe9d22c4d,
+# cf. https://github.com/containers/bubblewrap/issues/142)
 SESSION_OPTS=()
 if [[ "$DISABLE_NEW_SESSION" -eq 0 ]]; then
-    SESSION_OPTS+=(--new-session)
+    if [[ -t 0 && -t 1 ]]; then
+        yell "TTY detected; preserving job control (no --new-session)"
+    else
+        SESSION_OPTS+=(--new-session)
+    fi
 fi
 
 bwrap \
