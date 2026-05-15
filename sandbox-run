@@ -19,6 +19,9 @@ Run a command inside a bubblewrap sandbox.
 
 Options:
   -g, --git              Clone the current project git repository into a temporary directory
+  -t, --tmpdir LOC       Parent directory for the temporary clone; requires --git
+                         LOC may be 'auto' (under the source repo's .git/) or a path.
+                         Overrides SANDBOX_RUN_GIT_TMPDIR.
   -h, --help             Show this help message and exit
 EOF
 }
@@ -61,6 +64,7 @@ trap cleanup EXIT
 ORIGINAL_ARGS=("$@")
 SCRIPT_NAME="${0##*/}"
 USE_GIT_CLONE=0
+GIT_TMPDIR_CLI=""
 
 # Prevent nested sandboxing (causes overhead and bind-mount conflicts)
 if [[ -n "${SANDBOX_RUN:-}" ]]; then
@@ -89,6 +93,20 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
                 USE_GIT_CLONE=1
                 shift
                 ;;
+            -t|--tmpdir|--tmpdir=*)
+                case "$1" in
+                    --tmpdir=*)
+                        GIT_TMPDIR_CLI="${1#--tmpdir=}"
+                        [ -n "$GIT_TMPDIR_CLI" ] || die "--tmpdir= requires a value"
+                        shift
+                        ;;
+                    *)
+                        [ $# -lt 2 ] && die "Option '$1' requires an argument"
+                        GIT_TMPDIR_CLI="$2"
+                        shift 2
+                        ;;
+                esac
+                ;;
             --)
                 shift
                 break
@@ -101,6 +119,15 @@ if [ "$SCRIPT_NAME" = 'sandbox-run' ]; then
                 ;;
         esac
     done
+
+    if [ -n "$GIT_TMPDIR_CLI" ] && [ "$USE_GIT_CLONE" -eq 0 ]; then
+        die "--tmpdir requires --git"
+    fi
+
+    # CLI --tmpdir overrides SANDBOX_RUN_GIT_TMPDIR
+    if [ -n "$GIT_TMPDIR_CLI" ]; then
+        SANDBOX_RUN_GIT_TMPDIR="$GIT_TMPDIR_CLI"
+    fi
 
     if [ $# -eq 0 ]; then
         if [ -n "${SANDBOX_RUN_DEFAULT_CMD:-}" ]; then
@@ -138,7 +165,43 @@ if [ "$USE_GIT_CLONE" -eq 1 ]; then
         fi
 
         current_branch=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-        clone_dir=$(mktemp -d -t sandbox-run.git.XXXXXX)
+
+        # Pick a parent directory for the temporary clone.
+        # SANDBOX_RUN_GIT_TMPDIR:
+        #   unset   -> default mktemp location ($TMPDIR or /tmp)
+        #   auto    -> a directory under the source repo's .git/, which is
+        #              guaranteed to live on the same filesystem as the
+        #              source object store. This lets git's local-clone
+        #              hardlink optimization kick in (much faster and far
+        #              cheaper on disk for large repositories).
+        #   <path>  -> explicit path (relative to CWD or absolute); must exist.
+        clone_parent=""
+        case "${SANDBOX_RUN_GIT_TMPDIR:-}" in
+            "")
+                ;;
+            auto)
+                git_common=$(git -C "$ORIGINAL_PROJECT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+                if [ -z "$git_common" ]; then
+                    yell "warning: SANDBOX_RUN_GIT_TMPDIR=auto: cannot determine git common dir; falling back to default mktemp"
+                else
+                    clone_parent="$git_common/sandbox-run-clones"
+                    if ! mkdir -p "$clone_parent" 2>/dev/null; then
+                        yell "warning: SANDBOX_RUN_GIT_TMPDIR=auto: cannot create $clone_parent; falling back to default mktemp"
+                        clone_parent=""
+                    fi
+                fi
+                ;;
+            *)
+                clone_parent="$SANDBOX_RUN_GIT_TMPDIR"
+                [ -d "$clone_parent" ] || die "SANDBOX_RUN_GIT_TMPDIR='$SANDBOX_RUN_GIT_TMPDIR' is not a directory"
+                ;;
+        esac
+
+        if [ -z "$clone_parent" ]; then
+            clone_dir=$(mktemp -d -t sandbox-run.git.XXXXXX)
+        else
+            clone_dir=$(mktemp -d -p "$clone_parent" sandbox-run.git.XXXXXX)
+        fi
         [ -d "$clone_dir" ] || die "Failed to create temporary directory for git clone"
         CLEANUP_FILES+=("$clone_dir")
 

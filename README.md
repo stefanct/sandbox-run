@@ -165,6 +165,7 @@ All configuration uses the `SANDBOX_RUN_` prefix:
 | `SANDBOX_RUN_PRESETS=name:name` | Override default presets (see below) |
 | `SANDBOX_RUN_PRESETS_EXTRA=name:name` | Add extra presets (see below) |
 | `SANDBOX_RUN_TMUX_SOCKET=/path/to/socket` | Override tmux socket path (tmux preset) |
+| `SANDBOX_RUN_GIT_TMPDIR=auto\|path` | Parent directory for the temporary clone |
 
 Examples:
 
