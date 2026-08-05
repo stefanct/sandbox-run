@@ -1,5 +1,12 @@
 # Provide some minimal context for git to allow for proper
 # commit metadata if no complete gitconfig is made available.
+
+# Map a file (~/.gitconfig-sandbox-run by default) r/o if it exists
+# to allow for specific gitconfig files for the sandbox.
+if [ -z "${SANDBOX_RUN_GIT_CONFIG_PATH:-}" ]; then
+    SANDBOX_RUN_GIT_CONFIG_PATH="$HOME/.gitconfig-sandbox-run"
+fi
+
 configure_git-minimal() {
     command -v git >/dev/null 2>&1 || return
     if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -22,4 +29,13 @@ configure_git-minimal() {
         --setenv GIT_COMMITTER_NAME "$git_author_name"
         --setenv GIT_COMMITTER_EMAIL "$git_author_email"
     )
+
+    if [ -r "$SANDBOX_RUN_GIT_CONFIG_PATH" ]; then
+        ENV_PRESET_OPTS+=(
+            --setenv GIT_CONFIG_GLOBAL "$SANDBOX_RUN_GIT_CONFIG_PATH"
+        )
+        RO_BINDS+=("$SANDBOX_RUN_GIT_CONFIG_PATH")
+    else
+        yell "SANDBOX_RUN_GIT_CONFIG_PATH set but the file is not readable: \"${SANDBOX_RUN_GIT_CONFIG_PATH}\""
+    fi
 }
