@@ -140,6 +140,7 @@ The script has a few arrays you can edit to adjust what's exposed inside the san
 
 - `RO_BINDS` contains system paths mounted read-only
 - `RW_BINDS` contains paths mounted read-write (tool configs, package managers)
+- `DEV_BINDS` contains device paths mounted with device access enabled
 - `BLOCKED` lists files that get hidden (bound to `/dev/null`)
 
 ### Environment Variables
@@ -152,6 +153,7 @@ All configuration uses the `SANDBOX_RUN_` prefix:
 | `SANDBOX_RUN_NO_NET=1` | Disable network access |
 | `SANDBOX_RUN_RO_BIND=path:path` | Additional read-only binds |
 | `SANDBOX_RUN_RW_BIND=path:path` | Additional read-write binds |
+| `SANDBOX_RUN_DEV_BIND=path:path` | Additional device binds |
 | `SANDBOX_RUN_BLOCKED=path:path` | Additional paths to block |
 | `SANDBOX_RUN_BWRAP_ARGS="args"` | Extra bwrap arguments |
 | `SANDBOX_RUN_DBUS_TALK=name:name` | Additional D-Bus names to allow via `xdg-dbus-proxy --talk` |
@@ -169,6 +171,11 @@ SANDBOX_RUN_NO_NET=1 sandbox-run npm install
 
 # Add extra binds
 SANDBOX_RUN_RO_BIND=/opt/tools:/usr/local/share sandbox-run make
+
+# Pass hardware devices such as USB UART adapters into the sandbox.
+# udev-created symlinks work too:
+# Their host-side targets are resolved before the private /dev is created.
+SANDBOX_RUN_DEV_BIND=/dev/ttyNICENAME
 
 # Block additional files
 SANDBOX_RUN_BLOCKED=.env.local:.env.development sandbox-run make

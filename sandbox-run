@@ -145,6 +145,7 @@ RO_BINDS=(
 
 # Dynamic arrays populated by presets
 RW_BINDS=()
+DEV_BINDS=()
 SANDBOX_BINDS=()
 SHARED_BINDS=()
 EXTRA_BWRAP_OPTS=()
@@ -244,6 +245,7 @@ fi
 # Append paths from environment variables
 parse_paths SANDBOX_RUN_RO_BIND RO_BINDS
 parse_paths SANDBOX_RUN_RW_BIND RW_BINDS
+parse_paths SANDBOX_RUN_DEV_BIND DEV_BINDS
 parse_paths SANDBOX_RUN_BLOCKED BLOCKED
 
 # Let presets do any setup that depends on all presets having run.
@@ -267,6 +269,15 @@ BIND_OPTS+=(--bind "$SANDBOX_LOCAL" "$HOME/.local")
 BIND_OPTS+=(--bind "$SANDBOX_CACHE" "$SANDBOX_CACHE")
 for p in "${RO_BINDS[@]}"; do BIND_OPTS+=(--ro-bind-try "$p" "$p"); done
 for p in "${RW_BINDS[@]}"; do BIND_OPTS+=(--bind-try "$p" "$p"); done
+# Device binds must be applied after bwrap creates its private /dev below.
+# Resolve sources first: udev aliases are symlinks whose targets would otherwise
+# be looked up in the private /dev, where devices such as ttyUSB0 do not exist.
+# Keep the original path as the destination so the alias remains usable inside.
+DEV_BIND_OPTS=()
+for p in "${DEV_BINDS[@]}"; do
+    src=$(readlink -f -- "$p" 2>/dev/null) || src="$p"
+    DEV_BIND_OPTS+=(--dev-bind "$src" "$p")
+done
 # Sandbox dirs first (source:dest format)
 for entry in "${SANDBOX_BINDS[@]}"; do
     src="${entry%%:*}"
@@ -315,6 +326,7 @@ bwrap \
      "${EXTRA_BWRAP_OPTS[@]}" \
      --proc /proc \
      --dev /dev \
+     "${DEV_BIND_OPTS[@]}" \
      "${ISOLATION_OPTS[@]}" \
      "${NET_OPTS[@]}" \
      "${ENV_OPTS[@]}" \
