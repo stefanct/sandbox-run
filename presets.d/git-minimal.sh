@@ -134,9 +134,35 @@ _git_minimal_add_external_submodule_gitdir() {
     RW_BINDS+=("$git_dir")
 }
 
+# Run after environment binds and all presets have been collected. Inspect only
+# each bind's root, not nested repositories or metadata added during this pass.
+_git_minimal_add_rw_bind_gitdirs() {
+    local bind=""
+    local bind_real=""
+    local worktree_root=""
+    local -a binds=("${RW_BINDS[@]}")
+
+    for bind in "${binds[@]}"; do
+        [[ -d "$bind" ]] || continue
+        bind_real=$(realpath -e -- "$bind" 2>/dev/null) || continue
+        [[ -f "$bind_real/.git" && ! -L "$bind_real/.git" ]] || continue
+        worktree_root=$(
+            _git_minimal_git -C "$bind_real" rev-parse \
+                --path-format=absolute --show-toplevel 2>/dev/null
+        ) || continue
+        worktree_root=$(realpath -e -- "$worktree_root" 2>/dev/null) || continue
+        [[ "$bind_real" == "$worktree_root" ]] || continue
+        _git_minimal_add_external_submodule_gitdir "$bind_real"
+    done
+}
+
 configure_git-minimal() {
     command -v git >/dev/null 2>&1 || \
         die "git-minimal preset requires git, but git was not found in PATH"
+
+    # Register before project inspection: extra binds may be submodules even
+    # when CWD is not a repository root or lacks author configuration.
+    SANDBOX_RUN_FINALIZERS+=(_git_minimal_add_rw_bind_gitdirs)
 
     local project_real=""
     local worktree_root=""
