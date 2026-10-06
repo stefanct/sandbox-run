@@ -284,8 +284,10 @@ Extra presets are opt-in and must be explicitly enabled via `SANDBOX_RUN_PRESETS
 | `wayland` | Wayland display + GPU for GUI apps (Chromium, etc.) |
 | `audio` | PipeWire/PulseAudio runtime sockets for sound output/input |
 
-When the sandbox project directory or an additional read-write bind directory is exactly the root of a git submodule, `git-minimal` also makes that submodule's external git directory available read-write.
-Additional read-write binds (including those passed by wrappers via `--rw-bind`) are inspected after all presets and environment binds have been collected; nested repositories are not scanned.
+When the sandbox project directory or an additional bind directory is exactly the root of a git submodule, `git-minimal` also makes that submodule's external git directory available with matching access: read-write for the project and read-write binds, read-only for read-only binds.
+Additional binds (including those passed by wrappers via `--rw-bind` or `--ro-bind`) are inspected after all presets and environment binds have been collected; nested repositories are not scanned.
+If the same git directory is requested in both modes, explicit read-write access wins. Otherwise, discovered read-only metadata is mounted again after writable binds so a writable ancestor cannot silently grant metadata writes.
+Read-only Git commands that attempt optional index updates may need `GIT_OPTIONAL_LOCKS=0`; commands that require metadata writes will fail.
 The preset requires git to recognize the superproject relationship, verifies the submodule's `160000` entry in the superproject index, and restricts the bind to the superproject's canonical `.git/modules/` hierarchy.
 It does not expose the superproject's complete git directory.
 Automatic repository integration requires the sandbox project directory to be exactly the worktree root.

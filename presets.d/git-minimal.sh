@@ -25,6 +25,7 @@ _git_minimal_git() {
 
 _git_minimal_add_external_submodule_gitdir() {
     local project_real="$1"
+    local bind_mode="${2:-rw}"
     local git_dir=""
     local git_dir_real=""
     local git_common_dir=""
@@ -130,29 +131,65 @@ _git_minimal_add_external_submodule_gitdir() {
         return
     fi
 
-    # Match the write access an in-tree .git directory normally receives.
-    RW_BINDS+=("$git_dir")
+    # Match the worktree bind's access without exposing other metadata.
+    local -n gitdir_binds="${bind_mode^^}_BINDS"
+    local existing=""
+    for existing in "${gitdir_binds[@]}"; do
+        [[ "$existing" == "$git_dir_real" ]] && return
+    done
+    gitdir_binds+=("$git_dir_real")
 }
 
 # Run after environment binds and all presets have been collected. Inspect only
 # each bind's root, not nested repositories or metadata added during this pass.
-_git_minimal_add_rw_bind_gitdirs() {
+_git_minimal_add_bind_gitdirs() {
     local bind=""
     local bind_real=""
     local worktree_root=""
-    local -a binds=("${RW_BINDS[@]}")
+    local mode=""
+    local existing=""
+    local existing_real=""
+    local writable=0
+    local ro_count=${#RO_BINDS[@]}
+    local -a ro_binds=("${RO_BINDS[@]}")
+    local -a rw_binds=("${RW_BINDS[@]}")
+    local -a binds=()
 
-    for bind in "${binds[@]}"; do
-        [[ -d "$bind" ]] || continue
-        bind_real=$(realpath -e -- "$bind" 2>/dev/null) || continue
-        [[ -f "$bind_real/.git" && ! -L "$bind_real/.git" ]] || continue
-        worktree_root=$(
-            _git_minimal_git -C "$bind_real" rev-parse \
-                --path-format=absolute --show-toplevel 2>/dev/null
-        ) || continue
-        worktree_root=$(realpath -e -- "$worktree_root" 2>/dev/null) || continue
-        [[ "$bind_real" == "$worktree_root" ]] || continue
-        _git_minimal_add_external_submodule_gitdir "$bind_real"
+    for mode in ro rw; do
+        if [[ "$mode" == ro ]]; then
+            binds=("${ro_binds[@]}")
+        else
+            binds=("${rw_binds[@]}")
+        fi
+        for bind in "${binds[@]}"; do
+            [[ -d "$bind" ]] || continue
+            bind_real=$(realpath -e -- "$bind" 2>/dev/null) || continue
+            [[ -f "$bind_real/.git" && ! -L "$bind_real/.git" ]] || continue
+            worktree_root=$(
+                _git_minimal_git -C "$bind_real" rev-parse \
+                    --path-format=absolute --show-toplevel 2>/dev/null
+            ) || continue
+            worktree_root=$(realpath -e -- "$worktree_root" 2>/dev/null) || continue
+            [[ "$bind_real" == "$worktree_root" ]] || continue
+            _git_minimal_add_external_submodule_gitdir "$bind_real" "$mode"
+        done
+    done
+
+    # RO_BINDS are mounted before RW_BINDS. Reapply discovered read-only
+    # metadata last so a writable ancestor cannot accidentally make it writable.
+    # An explicit writable mount of that same gitdir takes precedence.
+    for bind in "${RO_BINDS[@]:ro_count}"; do
+        writable=0
+        for existing in "${RW_BINDS[@]}"; do
+            existing_real=$(realpath -e -- "$existing" 2>/dev/null) || continue
+            if [[ "$existing_real" == "$bind" ]]; then
+                writable=1
+                break
+            fi
+        done
+        if (( ! writable )); then
+            EXTRA_BWRAP_OPTS+=(--ro-bind-try "$bind" "$bind")
+        fi
     done
 }
 
@@ -162,7 +199,7 @@ configure_git-minimal() {
 
     # Register before project inspection: extra binds may be submodules even
     # when CWD is not a repository root or lacks author configuration.
-    SANDBOX_RUN_FINALIZERS+=(_git_minimal_add_rw_bind_gitdirs)
+    SANDBOX_RUN_FINALIZERS+=(_git_minimal_add_bind_gitdirs)
 
     local project_real=""
     local worktree_root=""
