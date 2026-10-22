@@ -23,13 +23,35 @@ _git_minimal_git() {
         git "$@"
 }
 
-_git_minimal_add_external_submodule_gitdir() {
+_git_minimal_add_gitdir_bind() {
+    local gitdir="$1"
+    local bind_mode="$2"
+    local -n gitdir_binds="${bind_mode^^}_BINDS"
+    local existing=""
+
+    for existing in "${gitdir_binds[@]}"; do
+        [[ "$existing" == "$gitdir" ]] && return
+    done
+    gitdir_binds+=("$gitdir")
+}
+
+_git_minimal_add_external_gitdir() {
     local project_real="$1"
     local bind_mode="${2:-rw}"
     local git_dir=""
     local git_dir_real=""
     local git_common_dir=""
     local git_common_dir_real=""
+    local worktree_id=""
+    local commondir_ref=""
+    local commondir_real=""
+    local gitfile_backlink=""
+    local gitfile_backlink_real=""
+    local project_gitfile_real=""
+    local worktree_entry=""
+    local listed_worktree=""
+    local listed_worktree_real=""
+    local registered_worktree=0
     local superproject_root=""
     local superproject_real=""
     local superproject_git_dir=""
@@ -40,7 +62,7 @@ _git_minimal_add_external_submodule_gitdir() {
     git_dir=$(
         _git_minimal_git -C "$project_real" rev-parse \
             --path-format=absolute --git-dir 2>/dev/null
-    ) || return
+    ) || return 0
     git_dir_real=$(realpath -e -- "$git_dir" 2>/dev/null) || {
         yell "git-minimal preset: cannot resolve gitdir: $git_dir"
         return
@@ -54,22 +76,106 @@ _git_minimal_add_external_submodule_gitdir() {
     esac
 
     # Only regular .git files at the project root may request an external bind.
-    # This excludes symlink tricks and deliberately ignores nested worktrees.
+    # This excludes symlink tricks and deliberately ignores nested repositories.
     if [[ ! -f "$project_real/.git" || -L "$project_real/.git" ]]; then
         yell "git-minimal preset: refusing external gitdir without a regular project-root .git file: $git_dir"
         return
     fi
 
-    # Git performs its submodule relationship check here.
-    # A .git file that merely points at an unrelated repository yields no
-    # superproject, and one pointing at another submodule reports another
-    # worktree before this function is reached by configure_git-minimal.
+    git_common_dir=$(
+        _git_minimal_git -C "$project_real" rev-parse \
+            --path-format=absolute --git-common-dir 2>/dev/null
+    ) || return 0
+    git_common_dir_real=$(realpath -e -- "$git_common_dir" 2>/dev/null) || {
+        yell "git-minimal preset: cannot resolve common gitdir: $git_common_dir"
+        return
+    }
+
+    if [[ "$git_common_dir_real" != "$git_dir_real" ]]; then
+        # Linked worktrees keep per-worktree metadata in a direct child of the
+        # common gitdir's worktrees/ directory.
+        case "$git_dir_real" in
+            "$git_common_dir_real"/worktrees/*)
+                worktree_id=${git_dir_real#"$git_common_dir_real"/worktrees/}
+                ;;
+            *)
+                yell "git-minimal preset: refusing linked worktree gitdir outside the common gitdir: $git_dir"
+                return
+                ;;
+        esac
+        if [[ -z "$worktree_id" || "$worktree_id" == */* ]]; then
+            yell "git-minimal preset: refusing non-direct worktree gitdir: $git_dir"
+            return
+        fi
+
+        # Verify the per-worktree commondir link independently of rev-parse.
+        if [[ ! -f "$git_dir_real/commondir" || -L "$git_dir_real/commondir" ]]; then
+            yell "git-minimal preset: linked worktree has no regular commondir file: $git_dir"
+            return
+        fi
+        IFS= read -r commondir_ref < "$git_dir_real/commondir" || return 0
+        commondir_ref=${commondir_ref%$'\r'}
+        if [[ "$commondir_ref" != /* ]]; then
+            commondir_ref="$git_dir_real/$commondir_ref"
+        fi
+        commondir_real=$(realpath -e -- "$commondir_ref" 2>/dev/null) || return 0
+        if [[ "$commondir_real" != "$git_common_dir_real" ]]; then
+            yell "git-minimal preset: linked worktree commondir does not match git: $commondir_ref"
+            return
+        fi
+
+        # The administrative gitdir must point back to this worktree's .git
+        # file, preventing a project from borrowing another worktree's gitdir.
+        if [[ ! -f "$git_dir_real/gitdir" || -L "$git_dir_real/gitdir" ]]; then
+            yell "git-minimal preset: linked worktree has no regular gitdir backlink: $git_dir"
+            return
+        fi
+        IFS= read -r gitfile_backlink < "$git_dir_real/gitdir" || return 0
+        gitfile_backlink=${gitfile_backlink%$'\r'}
+        if [[ "$gitfile_backlink" != /* ]]; then
+            gitfile_backlink="$git_dir_real/$gitfile_backlink"
+        fi
+        gitfile_backlink_real=$(realpath -e -- "$gitfile_backlink" 2>/dev/null) || return 0
+        project_gitfile_real=$(realpath -e -- "$project_real/.git" 2>/dev/null) || return 0
+        if [[ "$gitfile_backlink_real" != "$project_gitfile_real" ]]; then
+            yell "git-minimal preset: linked worktree gitdir points at another worktree: $gitfile_backlink"
+            return
+        fi
+
+        # Confirm that the common repository still registers this worktree.
+        while IFS= read -r -d '' worktree_entry; do
+            case "$worktree_entry" in
+                "worktree "*)
+                    listed_worktree=${worktree_entry#worktree }
+                    listed_worktree_real=$(realpath -e -- "$listed_worktree" 2>/dev/null) || continue
+                    if [[ "$listed_worktree_real" == "$project_real" ]]; then
+                        registered_worktree=1
+                    fi
+                    ;;
+            esac
+        done < <(
+            _git_minimal_git -C "$project_real" \
+                worktree list --porcelain -z 2>/dev/null
+        )
+        if (( ! registered_worktree )); then
+            yell "git-minimal preset: linked worktree is not registered in the common repository: $project_real"
+            return
+        fi
+
+        # Linked worktrees require the complete common gitdir for shared
+        # objects, refs, configuration, and worktree administration.
+        _git_minimal_add_gitdir_bind "$git_common_dir_real" "$bind_mode"
+        return
+    fi
+
+    # With no separate common dir, recognize only an absorbed submodule.
+    # Arbitrary gitfiles such as --separate-git-dir layouts remain unsupported.
     superproject_root=$(
         _git_minimal_git -C "$project_real" rev-parse \
             --path-format=absolute --show-superproject-working-tree 2>/dev/null
-    ) || return
+    ) || return 0
     if [[ -z "$superproject_root" ]]; then
-        yell "git-minimal preset: refusing external gitdir without a recognized superproject: $git_dir"
+        yell "git-minimal preset: refusing external gitdir that is neither a linked worktree nor a recognized submodule: $git_dir"
         return
     fi
     superproject_real=$(realpath -e -- "$superproject_root" 2>/dev/null) || {
@@ -89,7 +195,7 @@ _git_minimal_add_external_submodule_gitdir() {
     superproject_git_dir=$(
         _git_minimal_git -C "$superproject_real" rev-parse \
             --path-format=absolute --git-dir 2>/dev/null
-    ) || return
+    ) || return 0
     superproject_git_dir_real=$(realpath -e -- "$superproject_git_dir" 2>/dev/null) || {
         yell "git-minimal preset: cannot resolve superproject gitdir: $superproject_git_dir"
         return
@@ -104,21 +210,9 @@ _git_minimal_add_external_submodule_gitdir() {
             ;;
     esac
 
-    # A separate common dir would require another external bind whose safe
-    # scope is unclear, so support only the normal absorbed-submodule layout.
-    git_common_dir=$(
-        _git_minimal_git -C "$project_real" rev-parse \
-            --path-format=absolute --git-common-dir 2>/dev/null
-    ) || return
-    git_common_dir_real=$(realpath -e -- "$git_common_dir" 2>/dev/null) || return
-    if [[ "$git_common_dir_real" != "$git_dir_real" ]]; then
-        yell "git-minimal preset: refusing submodule with a separate common gitdir: $git_common_dir"
-        return
-    fi
-
     # Explicitly verify the relationship Git reported against the
     # superproject index. Mode 160000 denotes a submodule gitlink.
-    submodule_path=$(realpath --relative-to="$superproject_real" -- "$project_real") || return
+    submodule_path=$(realpath --relative-to="$superproject_real" -- "$project_real") || return 0
     index_entry=$(
         _git_minimal_git --literal-pathspecs -C "$superproject_real" \
             ls-files --error-unmatch --stage -- "$submodule_path" 2>/dev/null
@@ -132,12 +226,7 @@ _git_minimal_add_external_submodule_gitdir() {
     fi
 
     # Match the worktree bind's access without exposing other metadata.
-    local -n gitdir_binds="${bind_mode^^}_BINDS"
-    local existing=""
-    for existing in "${gitdir_binds[@]}"; do
-        [[ "$existing" == "$git_dir_real" ]] && return
-    done
-    gitdir_binds+=("$git_dir_real")
+    _git_minimal_add_gitdir_bind "$git_dir_real" "$bind_mode"
 }
 
 # Run after environment binds and all presets have been collected. Inspect only
@@ -171,7 +260,7 @@ _git_minimal_add_bind_gitdirs() {
             ) || continue
             worktree_root=$(realpath -e -- "$worktree_root" 2>/dev/null) || continue
             [[ "$bind_real" == "$worktree_root" ]] || continue
-            _git_minimal_add_external_submodule_gitdir "$bind_real" "$mode"
+            _git_minimal_add_external_gitdir "$bind_real" "$mode"
         done
     done
 
@@ -197,24 +286,25 @@ configure_git-minimal() {
     command -v git >/dev/null 2>&1 || \
         die "git-minimal preset requires git, but git was not found in PATH"
 
-    # Register before project inspection: extra binds may be submodules even
-    # when CWD is not a repository root or lacks author configuration.
+    # Register before project inspection: extra binds may be submodules or
+    # linked worktrees even when CWD is not a repository root or lacks author
+    # configuration.
     SANDBOX_RUN_FINALIZERS+=(_git_minimal_add_bind_gitdirs)
 
     local project_real=""
     local worktree_root=""
-    project_real=$(realpath -e -- "$PROJECT_DIR" 2>/dev/null) || return
+    project_real=$(realpath -e -- "$PROJECT_DIR" 2>/dev/null) || return 0
     worktree_root=$(
         _git_minimal_git -C "$project_real" rev-parse \
             --path-format=absolute --show-toplevel 2>/dev/null
-    ) || return
-    worktree_root=$(realpath -e -- "$worktree_root" 2>/dev/null) || return
+    ) || return 0
+    worktree_root=$(realpath -e -- "$worktree_root" 2>/dev/null) || return 0
 
     # Sandboxing a repository subdirectory intentionally does not expose the
     # repository root or its metadata.
-    [[ "$project_real" == "$worktree_root" ]] || return
+    [[ "$project_real" == "$worktree_root" ]] || return 0
 
-    _git_minimal_add_external_submodule_gitdir "$project_real"
+    _git_minimal_add_external_gitdir "$project_real"
 
     local git_author_name=""
     local git_author_email=""
